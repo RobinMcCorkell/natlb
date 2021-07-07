@@ -14,7 +14,7 @@ use kube::{
     Api, Client, ResourceExt,
 };
 use kube_runtime::{controller::ReconcilerAction, finalizer, Controller};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use thiserror::Error;
 
 const REFRESH_DURATION: Duration = Duration::from_secs(60);
@@ -52,7 +52,11 @@ async fn apply(
     services: &Api<Service>,
     nodes: &Api<Node>,
 ) -> Result<ReconcilerAction, ReconcileError> {
-    info!("Found a load balancer {}@{:?}", s.name(), s.namespace());
+    info!(
+        "Found a load balancer {}@{}",
+        s.name(),
+        s.namespace().unwrap_or_default()
+    );
 
     let spec = s.spec.as_ref().ok_or(ReconcileError::MissingSpec)?;
     let gateway = igd::aio::search_gateway(igd::SearchOptions::default()).await?;
@@ -135,7 +139,11 @@ async fn apply(
 }
 
 async fn cleanup(s: Service) -> Result<ReconcilerAction, ReconcileError> {
-    info!("Cleaning up {}@{:?}", s.name(), s.namespace());
+    info!(
+        "Cleaning up {}@{}",
+        s.name(),
+        s.namespace().unwrap_or_default()
+    );
 
     let spec = s.spec.as_ref().ok_or(ReconcileError::MissingSpec)?;
     let gateway = igd::aio::search_gateway(igd::SearchOptions::default()).await?;
@@ -209,7 +217,7 @@ async fn main() -> Result<()> {
         )
         .for_each(|res| async move {
             match res {
-                Ok(o) => info!("reconciled {:?}", o),
+                Ok(o) => debug!("reconciled {:?}", o),
                 Err(e) => error!("reconcile failed: {:?}", e),
             }
         })
