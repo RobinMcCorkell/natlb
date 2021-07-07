@@ -1,0 +1,6 @@
+apiVersion: v2
+name: natlb
+description: Load balancer using a NAT configured by UPnP
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
