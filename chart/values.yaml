@@ -1,10 +1,10 @@
 replicaCount: 1
 
 image:
-  repository: set-by-gitlab
+  repository: registry.gitlab.com/robinmccorkell/k8s-natlb
   pullPolicy: IfNotPresent
   # defaults to appVersion
-  tag: ""
+  tag: latest
 
 imagePullSecrets:
   - name: gitlab-registry

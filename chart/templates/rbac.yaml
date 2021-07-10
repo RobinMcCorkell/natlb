@@ -8,7 +8,7 @@ metadata:
   name: {{ template "natlb.fullname" . }}-controller
 rules:
   - apiGroups: [""]
-    resources: ["service"]
+    resources: ["services"]
     verbs:
       - get
       - watch
@@ -16,7 +16,12 @@ rules:
   - apiGroups: [""]
     resources: ["services/status"]
     verbs:
-      - update
+      - patch
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs:
+      - get
+      - list
 
 ---
 
