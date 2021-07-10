@@ -10,7 +10,7 @@ env_logger = "0.8.4"
 futures = "0.3.15"
 igd = {features = ["aio"], version = "0.12.0"}
 k8s-openapi = {features = ["v1_21"], version = "0.12.0"}
-kube = "0.58.0"
+kube = {default-features = false, features = ["rustls-tls", "client"], version = "0.58.0"}
 kube-runtime = "0.58.0"
 log = "0.4.14"
 serde = "1.0.126"
