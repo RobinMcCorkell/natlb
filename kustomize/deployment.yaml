@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: natlb
+spec:
+  selector: {} # Filled in by Kustomize.
+  strategy:
+    type: Recreate
+  template:
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: natlb
+          image: registry.gitlab.com/robinmccorkell/k8s-natlb
+          env:
+            - name: RUST_LOG
+              value: info
+            - name: KUBERNETES_SERVICE_HOST
+              value: kubernetes.default.svc
