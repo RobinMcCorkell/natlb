@@ -12,7 +12,7 @@ spec:
       dnsPolicy: ClusterFirstWithHostNet
       containers:
         - name: natlb
-          image: registry.gitlab.com/robinmccorkell/k8s-natlb
+          image: registry.gitlab.com/robinmccorkell/natlb
           env:
             - name: RUST_LOG
               value: info

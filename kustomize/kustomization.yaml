@@ -4,7 +4,7 @@ kind: Kustomization
 namespace: natlb
 
 images:
-  - name: registry.gitlab.com/robinmccorkell/k8s-natlb
+  - name: registry.gitlab.com/robinmccorkell/natlb
     newTag: latest
 
 commonLabels:
