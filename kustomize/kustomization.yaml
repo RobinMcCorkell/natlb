@@ -14,9 +14,3 @@ resources:
   - deployment.yaml
   - serviceaccount.yaml
   - rbac.yaml
-
-secretGenerator:
-  - name: gitlab-registry
-    files:
-      - .dockerconfigjson
-    type: kubernetes.io/dockerconfigjson
