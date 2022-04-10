@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     net::{Ipv4Addr, SocketAddrV4},
     str::FromStr,
     time::Duration,
@@ -23,6 +24,27 @@ const REFRESH_DURATION_ON_ERROR: Duration = Duration::from_secs(10);
 const PORTMAP_TTL: Duration = Duration::from_secs(240);
 const PORTMAP_DESCRIPTION: &str = "k8s natlb";
 
+const PORT_FORWARD_ANNOTATION: &str = "natlb.mccorkell.me.uk/port-forward";
+
+enum PortForwardMode {
+    Invalid(String),
+    Upnp,
+    Manual,
+}
+
+impl From<&Service> for PortForwardMode {
+    fn from(svc: &Service) -> Self {
+        let annotations = svc.annotations();
+        use PortForwardMode::*;
+        match annotations.get(PORT_FORWARD_ANNOTATION).map(|s| s.as_str()) {
+            None => Upnp,
+            Some("upnp") => Upnp,
+            Some("manual") => Manual,
+            Some(s) => Invalid(s.to_owned()),
+        }
+    }
+}
+
 #[derive(Error, Debug)]
 enum ReconcileError {
     #[error("missing object spec")]
@@ -33,6 +55,8 @@ enum ReconcileError {
     MissingNodePort(k8s_openapi::api::core::v1::ServicePort),
     #[error("unable to build local addr for port {0:?}")]
     BuildLocalAddr(k8s_openapi::api::core::v1::ServicePort),
+    #[error("bad port forward mode {0}")]
+    BadPortForwardMode(String),
 
     #[error(transparent)]
     UpnpSearchError(#[from] igd::SearchError),
@@ -58,53 +82,63 @@ async fn apply(
         s.namespace().unwrap_or_default()
     );
 
+    let port_forward_mode = PortForwardMode::from(&s);
+
     let spec = s.spec.as_ref().ok_or(ReconcileError::MissingSpec)?;
     let gateway = igd::aio::search_gateway(igd::SearchOptions::default()).await?;
 
-    let node_ips = nodes
-        .list(&ListParams::default())
-        .await?
-        .into_iter()
-        .filter_map(|n| n.status)
-        .filter_map(|ns| {
-            ns.addresses
+    match port_forward_mode {
+        PortForwardMode::Invalid(s) => return Err(ReconcileError::BadPortForwardMode(s)),
+        PortForwardMode::Manual => {
+            info!("Manual port forwarding mode");
+        }
+        PortForwardMode::Upnp => {
+            let node_ips = nodes
+                .list(&ListParams::default())
+                .await?
                 .into_iter()
-                .filter(|a| a.type_ == "InternalIP")
-                .filter_map(|a| Ipv4Addr::from_str(&a.address).ok())
-                .next()
-        })
-        .collect::<Vec<_>>();
+                .filter_map(|n| n.status)
+                .filter_map(|ns| {
+                    ns.addresses
+                        .into_iter()
+                        .filter(|a| a.type_ == "InternalIP")
+                        .filter_map(|a| Ipv4Addr::from_str(&a.address).ok())
+                        .next()
+                })
+                .collect::<Vec<_>>();
 
-    for service_port in &spec.ports {
-        let protocol = match service_port.protocol.as_deref() {
-            Some("TCP") => igd::PortMappingProtocol::TCP,
-            _ => return Err(ReconcileError::BadPortProtocol(service_port.clone())),
-        };
+            for service_port in &spec.ports {
+                let protocol = match service_port.protocol.as_deref() {
+                    Some("TCP") => igd::PortMappingProtocol::TCP,
+                    _ => return Err(ReconcileError::BadPortProtocol(service_port.clone())),
+                };
 
-        // TODO pick node IPs in a smarter way, e.g. consistent hashing.
-        let node_port = service_port
-            .node_port
-            .ok_or_else(|| ReconcileError::MissingNodePort(service_port.clone()))?
-            as u16;
-        let node_ip = node_ips
-            .iter()
-            .min()
-            .ok_or_else(|| ReconcileError::BuildLocalAddr(service_port.clone()))?;
-        let local_addr = SocketAddrV4::new(*node_ip, node_port);
+                // TODO pick node IPs in a smarter way, e.g. consistent hashing.
+                let node_port = service_port
+                    .node_port
+                    .ok_or_else(|| ReconcileError::MissingNodePort(service_port.clone()))?
+                    as u16;
+                let node_ip = node_ips
+                    .iter()
+                    .min()
+                    .ok_or_else(|| ReconcileError::BuildLocalAddr(service_port.clone()))?;
+                let local_addr = SocketAddrV4::new(*node_ip, node_port);
 
-        info!(
-            "Adding port redirection {} -> {}",
-            service_port.port, local_addr
-        );
-        gateway
-            .add_port(
-                protocol,
-                service_port.port as u16,
-                local_addr,
-                PORTMAP_TTL.as_secs() as u32,
-                PORTMAP_DESCRIPTION,
-            )
-            .await?;
+                info!(
+                    "Adding port redirection {} -> {}",
+                    service_port.port, local_addr
+                );
+                gateway
+                    .add_port(
+                        protocol,
+                        service_port.port as u16,
+                        local_addr,
+                        PORTMAP_TTL.as_secs() as u32,
+                        PORTMAP_DESCRIPTION,
+                    )
+                    .await?;
+            }
+        }
     }
 
     let external_ip = gateway.get_external_ip().await?;

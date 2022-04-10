@@ -14,6 +14,14 @@ Currently, all ingress traffic is attracted to the node running the NatLB contro
 
 ## Integration with k3s
 
-1) [Disable the default `servicelb` load balancer](https://rancher.com/docs/k3s/latest/en/networking/#disabling-the-service-lb), e.g. `curl -sfL https://get.k3s.io | sh -s - server --disable servicelb`
-2) Create the NatLB namespace: `kubectl create namespace natlb`
-3) Deploy NatLB: `kubectl apply -k ./kustomize`
+1. [Disable the default `servicelb` load balancer](https://rancher.com/docs/k3s/latest/en/networking/#disabling-the-service-lb), e.g. `curl -sfL https://get.k3s.io | sh -s - server --disable servicelb`
+2. Create the NatLB namespace: `kubectl create namespace natlb`
+3. Deploy NatLB: `kubectl apply -k ./kustomize`
+
+## Configuration
+
+Modern UPnP routers do not allow UPnP port forwarding for port numbers <1024. For such routers, configure a port forwarding manually (using the NodePort allocated to the service) and set the following annotation on the service:
+
+```
+natlb.mccorkell.me.uk/port-forward: manual
+```
