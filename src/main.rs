@@ -1,21 +1,21 @@
 use std::{
-    collections::BTreeMap,
     net::{Ipv4Addr, SocketAddrV4},
     str::FromStr,
     time::Duration,
 };
 
-use anyhow::*;
+use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{
     LoadBalancerIngress, LoadBalancerStatus, Node, Service, ServiceStatus,
 };
 use kube::{
     api::{ListParams, Patch, PatchParams},
+    runtime::{controller::Action, finalizer, watcher, Controller},
     Api, Client, ResourceExt,
 };
-use kube_runtime::{controller::ReconcilerAction, finalizer, Controller};
 use log::{debug, error, info, warn};
+use std::sync::Arc;
 use thiserror::Error;
 
 const REFRESH_DURATION: Duration = Duration::from_secs(60);
@@ -25,6 +25,7 @@ const PORTMAP_TTL: Duration = Duration::from_secs(240);
 const PORTMAP_DESCRIPTION: &str = "k8s natlb";
 
 const PORT_FORWARD_ANNOTATION: &str = "natlb.mccorkell.me.uk/port-forward";
+const LOAD_BALANCER_CLASS: &str = "natlb.mccorkell.me.uk/natlb";
 
 enum PortForwardMode {
     Invalid(String),
@@ -72,17 +73,17 @@ enum ReconcileError {
 }
 
 async fn apply(
-    s: Service,
+    s: &Service,
     services: &Api<Service>,
     nodes: &Api<Node>,
-) -> Result<ReconcilerAction, ReconcileError> {
+) -> Result<Action, ReconcileError> {
     info!(
         "Found a load balancer {}@{}",
-        s.name(),
-        s.namespace().unwrap_or_default()
+        s.name_any(),
+        s.namespace().unwrap_or_default(),
     );
 
-    let port_forward_mode = PortForwardMode::from(&s);
+    let port_forward_mode = PortForwardMode::from(s);
 
     let spec = s.spec.as_ref().ok_or(ReconcileError::MissingSpec)?;
     let gateway = igd::aio::search_gateway(igd::SearchOptions::default()).await?;
@@ -99,15 +100,17 @@ async fn apply(
                 .into_iter()
                 .filter_map(|n| n.status)
                 .filter_map(|ns| {
-                    ns.addresses
-                        .into_iter()
-                        .filter(|a| a.type_ == "InternalIP")
-                        .filter_map(|a| Ipv4Addr::from_str(&a.address).ok())
-                        .next()
+                    ns.addresses.and_then(|addresses| {
+                        addresses
+                            .into_iter()
+                            .filter(|a| a.type_ == "InternalIP")
+                            .filter_map(|a| Ipv4Addr::from_str(&a.address).ok())
+                            .next()
+                    })
                 })
                 .collect::<Vec<_>>();
 
-            for service_port in &spec.ports {
+            for service_port in spec.ports.as_ref().unwrap_or(&vec![]) {
                 let protocol = match service_port.protocol.as_deref() {
                     Some("TCP") => igd::PortMappingProtocol::TCP,
                     _ => return Err(ReconcileError::BadPortProtocol(service_port.clone())),
@@ -145,20 +148,20 @@ async fn apply(
 
     info!(
         "Setting load balancer IP for {} to {}",
-        s.name(),
+        s.name_any(),
         external_ip,
     );
     services
         .patch_status(
-            &s.name(),
+            &s.name_any(),
             &PatchParams::apply("natlb"),
             &Patch::Apply(Service {
                 status: Some(ServiceStatus {
                     load_balancer: Some(LoadBalancerStatus {
-                        ingress: vec![LoadBalancerIngress {
+                        ingress: Some(vec![LoadBalancerIngress {
                             ip: Some(external_ip.to_string()),
                             ..Default::default()
-                        }],
+                        }]),
                     }),
                     ..Default::default()
                 }),
@@ -167,22 +170,20 @@ async fn apply(
         )
         .await?;
 
-    Ok(ReconcilerAction {
-        requeue_after: Some(REFRESH_DURATION),
-    })
+    Ok(Action::requeue(REFRESH_DURATION))
 }
 
-async fn cleanup(s: Service) -> Result<ReconcilerAction, ReconcileError> {
+async fn cleanup(s: &Service) -> Result<Action, ReconcileError> {
     info!(
         "Cleaning up {}@{}",
-        s.name(),
+        s.name_any(),
         s.namespace().unwrap_or_default()
     );
 
     let spec = s.spec.as_ref().ok_or(ReconcileError::MissingSpec)?;
     let gateway = igd::aio::search_gateway(igd::SearchOptions::default()).await?;
 
-    for service_port in &spec.ports {
+    for service_port in spec.ports.as_ref().unwrap_or(&vec![]) {
         let protocol = match service_port.protocol.as_deref() {
             Some("TCP") => igd::PortMappingProtocol::TCP,
             _ => return Err(ReconcileError::BadPortProtocol(service_port.clone())),
@@ -199,9 +200,7 @@ async fn cleanup(s: Service) -> Result<ReconcilerAction, ReconcileError> {
         }?;
     }
 
-    Ok(ReconcilerAction {
-        requeue_after: None,
-    })
+    Ok(Action::await_change())
 }
 
 #[actix_rt::main]
@@ -210,24 +209,29 @@ async fn main() -> Result<()> {
     let client = Client::try_default().await?;
 
     let services = Api::<Service>::all(client.clone());
-    let lp = ListParams::default();
 
-    Controller::new(services, lp)
+    let context = Arc::new(());
+    Controller::new(services, watcher::Config::default())
         .run(
             |s, _| {
                 let services = Api::<Service>::namespaced(client.clone(), &s.namespace().unwrap());
                 let nodes = Api::<Node>::all(client.clone());
                 async move {
-                    let spec = s.spec.as_ref().ok_or(finalizer::Error::ApplyFailed {
-                        source: ReconcileError::MissingSpec,
-                    })?;
-                    let ty = spec.type_.as_ref().ok_or(finalizer::Error::ApplyFailed {
-                        source: ReconcileError::MissingSpec,
-                    })?;
+                    let spec = s
+                        .spec
+                        .as_ref()
+                        .ok_or(finalizer::Error::ApplyFailed(ReconcileError::MissingSpec))?;
+                    let ty = spec
+                        .type_
+                        .as_ref()
+                        .ok_or(finalizer::Error::ApplyFailed(ReconcileError::MissingSpec))?;
                     if ty != "LoadBalancer" {
-                        return Ok(ReconcilerAction {
-                            requeue_after: None,
-                        });
+                        return Ok(Action::await_change());
+                    }
+                    if let Some(class) = spec.load_balancer_class.as_ref() {
+                        if class != LOAD_BALANCER_CLASS {
+                            return Ok(Action::await_change());
+                        }
                     }
 
                     finalizer::finalizer(
@@ -236,18 +240,16 @@ async fn main() -> Result<()> {
                         s,
                         |event| async {
                             match event {
-                                finalizer::Event::Apply(s) => apply(s, &services, &nodes).await,
-                                finalizer::Event::Cleanup(s) => cleanup(s).await,
+                                finalizer::Event::Apply(s) => apply(&s, &services, &nodes).await,
+                                finalizer::Event::Cleanup(s) => cleanup(&s).await,
                             }
                         },
                     )
                     .await
                 }
             },
-            |_err, _| ReconcilerAction {
-                requeue_after: Some(REFRESH_DURATION_ON_ERROR),
-            },
-            kube_runtime::controller::Context::new(()),
+            |_obj, _err, _| Action::requeue(REFRESH_DURATION_ON_ERROR),
+            context,
         )
         .for_each(|res| async move {
             match res {

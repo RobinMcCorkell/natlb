@@ -8,7 +8,7 @@ This isn't a true load balancer though, in that all traffic for a given port wil
 
 ## How
 
-The NatLB controller picks up on changes to Services with `Type=LoadBalancer`, then tries to find a UPnP Internet Gateway Device (IGD) that it can program to expose the requested service ports to the Internet. It then picks up the external IP reported by the IGD and writes that back into Kubernetes.
+The NatLB controller picks up on changes to Services with `Type=LoadBalancer` and (optionally) `loadBalancerClass: mccorkell.me.uk/natlb`, then tries to find a UPnP Internet Gateway Device (IGD) that it can program to expose the requested service ports to the Internet. It then picks up the external IP reported by the IGD and writes that back into Kubernetes.
 
 Currently, all ingress traffic is attracted to the node running the NatLB controller, where the implicit NodePort takes care of delivering the traffic to the right node (via kube-proxy).
 
