@@ -3,7 +3,7 @@ kind: Kustomization
 
 images:
   - name: registry.gitlab.com/robinmccorkell/natlb
-    newTag: latest
+    newTag: "0.1.1"
 
 commonLabels:
   app: natlb
